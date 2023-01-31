@@ -1,10 +1,12 @@
 import datetime
+import random
 from decimal import Decimal
 from typing import Optional, List, Dict, Generator
 from uuid import UUID, uuid4
 
 import ijson
 from aiohttp_client_cache import CachedSession, SQLiteBackend
+from aiostream import stream, pipe
 from beanie import Document
 from pydantic import AnyUrl, Field
 from typing_extensions import TypedDict
@@ -39,6 +41,8 @@ class Color(str):
             raise TypeError('string required')
         if v not in [cls.WHITE, cls.BLUE, cls.BLACK, cls.RED, cls.GREEN, cls.COLORLESS]:
             raise TypeError('string is not a legal color code')
+
+        return v
 
     def __repr__(self):
         return f'Color({super().__repr__()})'
@@ -342,6 +346,7 @@ class Scryfall:
         url = "{root}/private/tags/{type}".format(root=self.root, type=tag_type)
         async with self.session:
             async with self.session.get(url) as f:
+                f.raise_for_status()
                 async for current_tag in ijson.items_async(f.content, 'data.item'):
                     yield current_tag
 
@@ -351,6 +356,7 @@ class Scryfall:
         bulk = None
         async with self.session:
             async with self.session.get(url) as f:
+                f.raise_for_status()
                 async for current_bulk in ijson.items_async(f.content, 'data.item'):
                     bulk_types.append(current_bulk.get("type"))
                     if current_bulk.get("type") == bulk_type:
@@ -360,5 +366,25 @@ class Scryfall:
                 raise IndexError("{} bulk type not found in {}", bulk_type, ",".join(bulk_types))
 
             async with self.session.get(bulk.get("download_uri")) as f:
+                f.raise_for_status()
                 async for current_card in ijson.items_async(f.content, 'item'):
                     yield current_card
+
+    async def random(self, q: str) -> dict:
+        url = '{root}/cards/random'.format(root=self.root)
+        async with self.session.disabled():
+            async with self.session.get(url, params={"q": q}) as f:
+                f.raise_for_status()
+                return await f.json()
+
+    async def random_order(self, q: str) -> dict:
+        s = stream.preserve(self.search(q)) | pipe.skip(random.randint(0, 3)) | pipe.take(1)
+        return await s
+
+    async def search(self, q: str) -> Generator[dict, None, None]:
+        url = '{root}/cards/search'.format(root=self.root)
+        async with self.session.get(url, params={"q": q}) as f:
+            f.raise_for_status()
+            data = await f.json()
+            for card in data.get("data", []):
+                yield card
